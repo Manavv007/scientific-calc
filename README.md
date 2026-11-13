@@ -1,8 +1,8 @@
 # PureGuard
 
 A strict, on-device adult content blocker for Android, written in Kotlin with Jetpack Compose.
-It is locked with a password **nobody knows**: it was generated randomly and only a one-way
-hash is in the code.
+It is locked with a random password. Only a one-way hash is in the code; the password itself
+is saved in `PASSWORD.txt`.
 
 ## Install
 
@@ -27,7 +27,7 @@ Updates install over the old version. You never need to uninstall.
 | **Self-protection** | While locked, it kicks you out of any screen that could disable it: App info (force stop, uninstall, clear data), its accessibility toggle, device-admin deactivation, VPN settings, Private DNS, adding users or guests, and the "reboot to safe mode" prompt. |
 | **Uninstall protection** | Device administrator, so Android refuses to uninstall it. |
 | **Self-healing** | A watchdog every 15 minutes, on boot, and every 20 seconds from Screen Guard restarts the filter and raises an alert if anything is off. |
-| **Password** | 28 random characters, stored only as PBKDF2-SHA256 (210k iterations). Wrong guesses lock the prompt with an exponential back-off of up to 24 hours. |
+| **Password** | 20 random characters, stored only as PBKDF2-SHA256 (210k iterations). Wrong guesses lock the prompt with an exponential back-off of up to 24 hours. |
 
 ### Optional: maximum strength (needs a computer once)
 
