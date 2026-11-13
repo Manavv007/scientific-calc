@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PureGuard</string>
+    <string name="accessibility_summary">Blocks adult websites, searches and apps, and protects PureGuard from being switched off.</string>
+    <string name="accessibility_description">PureGuard Screen Guard reads the address bar of browsers and the text on screen to detect adult content and close it. It also stops PureGuard\'s own protection from being disabled without the password. Nothing you see or type ever leaves your phone.</string>
+    <string name="admin_disable_warning">Disabling PureGuard requires the password. Open PureGuard to unlock.</string>
+</resources>
