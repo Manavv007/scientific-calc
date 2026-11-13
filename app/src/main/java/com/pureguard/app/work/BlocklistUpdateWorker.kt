@@ -11,7 +11,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.GZIPInputStream
 
 /**
  * Refreshes the adult-domain list from community-maintained sources and
@@ -32,9 +31,7 @@ class BlocklistUpdateWorker(context: Context, params: WorkerParameters) :
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Prefs.init(applicationContext)
         val builder = HashedDomainSet.Builder()
-        applicationContext.assets.open(DomainFilter.ASSET).use {
-            builder.addAll(GZIPInputStream(it))
-        }
+        runCatching { DomainFilter.addBundled(applicationContext, builder) }
         var fetched = 0
         for (src in SOURCES) {
             try {

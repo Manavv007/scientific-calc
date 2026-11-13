@@ -3,6 +3,7 @@ package com.pureguard.app.filter
 import android.content.Context
 import android.util.Log
 import com.pureguard.app.core.Prefs
+import java.io.BufferedInputStream
 import java.io.File
 import java.util.zip.GZIPInputStream
 import kotlin.concurrent.thread
@@ -10,7 +11,7 @@ import kotlin.concurrent.thread
 /** The single source of truth for "is this hostname allowed?". */
 object DomainFilter {
     private const val TAG = "DomainFilter"
-    const val ASSET = "adult_domains.txt.gz"
+    const val ASSET = "adult_domains.bin"
     private const val CACHE = "blocklist.bin"
 
     sealed interface Verdict {
@@ -30,7 +31,15 @@ object DomainFilter {
     fun loadAsync(context: Context) {
         if (ready) return
         val app = context.applicationContext
-        thread(name = "blocklist-load", isDaemon = true) { load(app) }
+        thread(name = "blocklist-load", isDaemon = true) {
+            try {
+                load(app)
+            } catch (e: Throwable) {
+                // Never let a list problem take the app down; DNS upstreams and
+                // keyword rules still protect while the list is unavailable.
+                Log.e(TAG, "Blocklist load failed", e)
+            }
+        }
     }
 
     @Synchronized
@@ -47,8 +56,19 @@ object DomainFilter {
 
     fun buildFromAsset(context: Context): HashedDomainSet {
         val b = HashedDomainSet.Builder()
-        context.assets.open(ASSET).use { b.addAll(GZIPInputStream(it)) }
+        addBundled(context, b)
         return b.build()
+    }
+
+    /** Adds the bundled list; accepts it gzipped or plain (build tools may unpack it). */
+    fun addBundled(context: Context, b: HashedDomainSet.Builder) {
+        context.assets.open(ASSET).use { raw ->
+            val input = BufferedInputStream(raw, 1 shl 16)
+            input.mark(2)
+            val gz = input.read() == 0x1f && input.read() == 0x8b
+            input.reset()
+            b.addAll(if (gz) GZIPInputStream(input) else input)
+        }
     }
 
     /** Called by the updater after downloading fresh lists. */
