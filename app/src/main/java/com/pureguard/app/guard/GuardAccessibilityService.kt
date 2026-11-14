@@ -11,6 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import com.pureguard.app.R
+import com.pureguard.app.core.PaymentApps
 import com.pureguard.app.core.Prefs
 import com.pureguard.app.core.Protection
 import com.pureguard.app.filter.BuiltInLists
@@ -24,8 +25,9 @@ import java.util.ArrayDeque
 /**
  * "Screen Guard". Works on top of the DNS filter and catches what DNS can't:
  *  - adult URLs and search queries in any browser's address bar
- *  - adult searches typed into any app
- *  - screens full of explicit text (e.g. inside apps or cached pages)
+ *  - adult searches typed into a browser
+ *  - optionally, screens full of explicit text
+ * It never inspects banking / payment apps.
  *  - bypass apps (Tor, VPN apps, proxy browsers)
  *  - attempts to disable, force-stop or uninstall PureGuard while locked
  */
@@ -34,6 +36,18 @@ class GuardAccessibilityService : AccessibilityService() {
     companion object {
         @Volatile var connected = false
             private set
+
+        @Volatile private var instance: GuardAccessibilityService? = null
+
+        /**
+         * Switches the service off completely (used by the payment pause), so
+         * payment apps no longer see an active accessibility service.
+         */
+        fun pauseSelf() {
+            val s = instance ?: return
+            connected = false
+            runCatching { s.disableSelf() }
+        }
 
         private const val SCAN_DEBOUNCE_MS = 600L
         private const val BLOCK_COOLDOWN_MS = 1500L
@@ -48,19 +62,14 @@ class GuardAccessibilityService : AccessibilityService() {
             "com.android.packageinstaller", "com.google.android.packageinstaller",
             "com.samsung.android.packageinstaller", "com.miui.packageinstaller",
             "com.android.permissioncontroller", "com.google.android.permissioncontroller",
-            "com.android.vpndialogs", "com.samsung.accessibility",
+            "com.samsung.accessibility",
             "com.samsung.android.lool", "com.samsung.android.sm.devicesecurity",
-            "com.android.systemui", "android",
         )
 
         private val DANGER_PHRASES = listOf(
             "uninstall", "force stop", "force close", "deactivate", "turn off",
             "clear storage", "clear data", "delete data", "manage space",
             "disconnect", "forget", "always-on vpn", "stop service", "remove",
-        )
-
-        private val SAFE_MODE_PHRASES = listOf(
-            "reboot to safe mode", "restart in safe mode", "safe mode",
         )
     }
 
@@ -83,6 +92,8 @@ class GuardAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Prefs.init(this)
         connected = true
+        instance = this
+        Prefs.screenGuardWanted = true
         label = getString(R.string.app_name).lowercase()
         DomainFilter.loadAsync(this)
         refreshKeyboards()
@@ -94,6 +105,9 @@ class GuardAccessibilityService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName) return
+        // Never look at, or act on, banking / UPI / wallet apps.
+        if (PaymentApps.isPayment(pkg)) return
+        if (Prefs.paused) return
 
         periodicMaintenance()
 
@@ -108,8 +122,10 @@ class GuardAccessibilityService : AccessibilityService() {
 
         if (pkg in keyboards || pkg == "com.android.systemui") return
 
-        // 3) Typed text (search boxes in any app).
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && Prefs.typingGuard) {
+        // 3) Searches typed into a browser (other apps are left alone).
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && Prefs.typingGuard &&
+            Browsers.isBrowser(pkg)
+        ) {
             val typed = event.text?.joinToString(" ") ?: ""
             if (typed.length in 3..200 && ContentClassifier.isAdultQuery(typed)) {
                 block("Adult search blocked", goHome = false)
@@ -135,9 +151,7 @@ class GuardAccessibilityService : AccessibilityService() {
         val text = collectText(root, 400).lowercase()
 
         val dangerous = when {
-            pkg == "com.android.vpndialogs" -> true
-            pkg == "com.android.systemui" || pkg == "android" ->
-                SAFE_MODE_PHRASES.any { text.contains(it) }
+            pkg == "com.android.vpndialogs" -> Prefs.vpnWanted
             text.contains(label) && DANGER_PHRASES.any { text.contains(it) } -> true
             text.contains("use $label") || text.contains("$label shortcut") -> true
             // Private DNS dialog would let someone point DNS around the filter.
@@ -145,8 +159,6 @@ class GuardAccessibilityService : AccessibilityService() {
                 (text.contains("private dns") && text.contains("hostname") && text.contains("automatic")) -> true
             // Adding a second user / guest would give an unfiltered profile.
             (text.contains("add user") || text.contains("add guest")) && text.contains("users") -> true
-            // Turning off "Block connections without VPN" / editing Always-on VPN.
-            text.contains("always-on vpn") || text.contains("block connections without vpn") -> true
             else -> false
         }
         if (!dangerous) return false
@@ -277,11 +289,13 @@ class GuardAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        instance = null
         super.onDestroy()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         connected = false
+        instance = null
         return super.onUnbind(intent)
     }
 }

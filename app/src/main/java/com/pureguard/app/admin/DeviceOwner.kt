@@ -8,21 +8,19 @@ import android.util.Log
 import com.pureguard.app.core.Prefs
 
 /**
- * Extra-strong mode, available only when PureGuard is made "device owner" with
- *   adb shell dpm set-device-owner com.pureguard.app/.admin.GuardAdminReceiver
- * In this mode Android itself enforces the rules below; no settings trick can
- * undo them. Factory reset is intentionally left available as a last resort.
+ * Device-admin helpers. If PureGuard has additionally been made device owner,
+ * a few system-level restrictions are applied while locked. Safe mode, USB
+ * debugging and factory reset are never restricted.
  */
 object DeviceOwner {
     private const val TAG = "DeviceOwner"
 
+    // Safe mode and USB debugging are deliberately NOT restricted: they are the
+    // rescue routes if anything ever goes wrong.
     private val RESTRICTIONS = buildList {
-        add(UserManager.DISALLOW_CONFIG_VPN)          // can't switch VPN / always-on off
-        add(UserManager.DISALLOW_SAFE_BOOT)           // safe mode would disable PureGuard
-        add(UserManager.DISALLOW_ADD_USER)            // a second user/guest has no filter
-        add(UserManager.DISALLOW_DEBUGGING_FEATURES)  // no adb uninstall
+        add(UserManager.DISALLOW_ADD_USER) // a second user/guest has no filter
         if (Build.VERSION.SDK_INT >= 29) add(UserManager.DISALLOW_CONFIG_PRIVATE_DNS)
-    }.distinct()
+    }
 
     fun dpm(context: Context): DevicePolicyManager =
         context.getSystemService(DevicePolicyManager::class.java)
@@ -39,12 +37,6 @@ object DeviceOwner {
         try {
             RESTRICTIONS.forEach { dpm.addUserRestriction(admin, it) }
             dpm.setUninstallBlocked(admin, context.packageName, true)
-            dpm.setAlwaysOnVpnPackage(admin, context.packageName, false)
-            if (Build.VERSION.SDK_INT >= 29) {
-                dpm.setGlobalPrivateDnsModeOpportunistic(admin)
-            }
-            // Keep our accessibility service allowed.
-            dpm.setPermittedAccessibilityServices(admin, null)
         } catch (e: Exception) {
             Log.e(TAG, "applyPolicies failed", e)
         }
@@ -59,7 +51,6 @@ object DeviceOwner {
             try {
                 RESTRICTIONS.forEach { dpm.clearUserRestriction(admin, it) }
                 dpm.setUninstallBlocked(admin, context.packageName, false)
-                dpm.setAlwaysOnVpnPackage(admin, null, false)
                 @Suppress("DEPRECATION")
                 dpm.clearDeviceOwnerApp(context.packageName)
             } catch (e: Exception) {

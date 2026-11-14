@@ -1,7 +1,5 @@
 package com.pureguard.app.ui
 
-import android.text.format.DateUtils
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,12 +28,10 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Dns
-import androidx.compose.material.icons.rounded.ExpandLess
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Notifications
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Visibility
@@ -74,13 +70,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.pureguard.app.BuildConfig
 import com.pureguard.app.core.PasswordVault
 import com.pureguard.app.core.Prefs
+import com.pureguard.app.core.PrivateDns
 import com.pureguard.app.core.Protection
 import com.pureguard.app.core.ProtectionStatus
 import com.pureguard.app.ui.theme.Good
@@ -93,27 +90,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.NumberFormat
 
 interface HomeActions {
-    fun enableVpn()
+    fun applyDns()
+    fun openNetworkSettings()
+    fun setDnsStrict(strict: Boolean)
+    fun enableAdmin()
     fun openAccessibility()
     fun openAppInfo()
-    fun enableAdmin()
-    fun openVpnSettings()
+    fun enableVpn()
+    fun pause()
+    fun resume()
     fun requestBattery()
     fun requestNotifications()
     fun lock()
     fun relock()
     fun removeProtection()
-    fun updateLists()
     fun copy(text: String)
 }
 
 private const val CMD_SECURE =
     "adb shell pm grant com.pureguard.app android.permission.WRITE_SECURE_SETTINGS"
-private const val CMD_OWNER =
-    "adb shell dpm set-device-owner com.pureguard.app/.admin.GuardAdminReceiver"
 
 @Composable
 fun HomeScreen(actions: HomeActions) {
@@ -127,9 +124,11 @@ fun HomeScreen(actions: HomeActions) {
         }
     }
     var showPassword by remember { mutableStateOf(false) }
+    var showDnsSteps by remember { mutableStateOf(false) }
     var confirmLock by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     val refresh = { tick++; status = Protection.status(context) }
+    val canEdit = !status.locked || status.unlockedForMs > 0
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         LazyColumn(
@@ -143,26 +142,21 @@ fun HomeScreen(actions: HomeActions) {
         ) {
             item { Header(status) }
             item { Hero(status) }
-            item { Stats(status) }
 
-            item { SectionTitle("Protection layers") }
-            item {
-                Layer(
-                    Icons.Rounded.Dns, "Content filter",
-                    "Blocks ${fmt(status.domains.coerceAtLeast(100_000))}+ adult sites at the network level, " +
-                        "forces SafeSearch on Google, Bing, DuckDuckGo & YouTube, and shuts down DNS bypasses.",
-                    status.vpnRunning, "Turn on", actions::enableVpn,
-                )
+            if (status.hasPausableLayers || status.pausedForMs > 0) {
+                item { PauseCard(status, actions) }
             }
+
+            item { SectionTitle("Core protection") }
             item {
                 Layer(
-                    Icons.Rounded.Visibility, "Screen Guard",
-                    "Watches address bars, searches and on-screen text in every app, blocks bypass apps, " +
-                        "and stops PureGuard from being switched off.",
-                    status.accessibility, "Open settings", actions::openAccessibility,
-                    hint = if (!status.accessibility)
-                        "Toggle greyed out? Open App info → ⋮ → “Allow restricted settings”, then try again." else null,
-                    hintAction = "App info" to actions::openAppInfo,
+                    Icons.Rounded.Dns, "Safe DNS filter",
+                    "Blocks adult sites and forces SafeSearch in every app and browser, using Android's own " +
+                        "Private DNS setting. Works alongside banking and payment apps.",
+                    status.privateDns,
+                    if (status.secureSettings) "Turn on" else "Set up",
+                    { if (status.secureSettings) actions.applyDns() else showDnsSteps = true },
+                    enabled = canEdit || !status.privateDns,
                 )
             }
             item {
@@ -172,70 +166,113 @@ fun HomeScreen(actions: HomeActions) {
                     status.admin, "Activate", actions::enableAdmin,
                 )
             }
-            item {
-                Layer(
-                    Icons.Rounded.VpnLock, "Always-on filter",
-                    "Starts the filter automatically at boot and keeps it running. In the VPN settings, enable " +
-                        "“Always-on VPN” for PureGuard. Leave “Block connections without VPN” off.",
-                    status.alwaysOn || status.deviceOwner, "VPN settings",
-                    actions::openVpnSettings, enabled = Prefs.canEdit,
-                )
-            }
-            item {
-                Layer(
-                    Icons.Rounded.BatteryChargingFull, "Never put to sleep",
-                    "Stops the battery optimiser from killing protection in the background.",
-                    status.batteryUnrestricted, "Allow", actions::requestBattery,
-                )
-            }
             if (!status.notifications) {
                 item {
                     Layer(
-                        Icons.Rounded.Notifications, "Tamper alerts",
-                        "Lets PureGuard warn you if protection is ever interrupted.",
+                        Icons.Rounded.Notifications, "Alerts",
+                        "Lets PureGuard tell you if the filter is ever switched off.",
                         false, "Allow", actions::requestNotifications,
                     )
                 }
             }
+            if (!status.secureSettings) {
+                item { ComputerSetup(actions) }
+            }
 
-            item { Advanced(status, actions) }
+            item { SectionTitle("Optional extras") }
+            item {
+                Text(
+                    "These add strength, but some banking and payment apps refuse to run while they are on. " +
+                        "If a payment fails, use “Pause for payments” at the top, or leave these off.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+            item {
+                Layer(
+                    Icons.Rounded.Visibility, "Screen Guard",
+                    "Checks browser address bars and searches, blocks Tor and proxy apps, and guards " +
+                        "PureGuard's settings while locked. Never looks at payment apps.",
+                    status.accessibility, "Open settings", actions::openAccessibility,
+                    hint = if (!status.accessibility)
+                        "Shows “Restricted setting”? Tap OK, then App info → ⋮ → Allow restricted settings." else null,
+                    hintAction = "App info" to actions::openAppInfo,
+                )
+            }
+            item {
+                Layer(
+                    Icons.Rounded.VpnLock, "Backup VPN filter",
+                    "A second on-device filter with 110,000+ adult sites. Payment apps are routed around it, " +
+                        "but some still object to any active VPN.",
+                    status.vpnRunning, "Turn on", actions::enableVpn,
+                )
+            }
+            if ((status.accessibility || status.vpnRunning) && !status.batteryUnrestricted) {
+                item {
+                    Layer(
+                        Icons.Rounded.BatteryChargingFull, "Keep extras running",
+                        "Stops the battery optimiser from closing the optional extras.",
+                        false, "Allow", actions::requestBattery,
+                    )
+                }
+            }
 
             when {
-                !status.locked -> item {
-                    LockCard(status.coreReady) { confirmLock = true }
-                }
+                !status.locked -> item { LockCard(status.filterActive) { confirmLock = true } }
                 status.unlockedForMs > 0 -> item {
                     UnlockedCard(status.unlockedForMs, actions::relock) { confirmRemove = true }
                 }
                 else -> item { LockedCard { showPassword = true } }
             }
 
-            if (Prefs.canEdit) {
+            if (canEdit) {
                 item { SectionTitle("Settings") }
-                item { SettingsCard(tick, refresh) }
+                item { SettingsCard(tick, actions, refresh) }
                 item { DomainListCard("Always block", "example.com", tick, refresh, allowList = false) }
                 item { DomainListCard("Always allow", "work-site.com", tick, refresh, allowList = true) }
             }
 
             item {
-                OutlinedButton(onClick = actions::updateLists, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Update blocklists now")
-                }
-            }
-            item {
                 Text(
-                    "Everything runs on this phone. PureGuard never sends what you browse anywhere.",
+                    "PureGuard ${BuildConfig.VERSION_NAME}  ·  Everything runs on this phone.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, start = 4.dp),
                 )
             }
         }
     }
 
     if (showPassword) PasswordDialog(onDismiss = { showPassword = false; refresh() })
+
+    if (showDnsSteps) {
+        val host = PrivateDns.wantedHost()
+        AlertDialog(
+            onDismissRequest = { showDnsSteps = false },
+            icon = { Icon(Icons.Rounded.Dns, null) },
+            title = { Text("Turn on the Safe DNS filter") },
+            text = {
+                Column {
+                    Text("1. Tap “Copy address”.")
+                    Text("2. Tap “Open settings” and find Private DNS (search for it if needed).")
+                    Text("3. Choose “Private DNS provider hostname”, paste the address and save.")
+                    Spacer(Modifier.height(12.dp))
+                    Text(host, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { actions.copy(host) }) {
+                        Icon(Icons.Rounded.ContentCopy, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Copy address")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { actions.copy(host); actions.openNetworkSettings() }) { Text("Open settings") }
+            },
+            dismissButton = { TextButton(onClick = { showDnsSteps = false }) { Text("Done") } },
+        )
+    }
 
     if (confirmLock) {
         AlertDialog(
@@ -244,8 +281,9 @@ fun HomeScreen(actions: HomeActions) {
             title = { Text("Lock PureGuard?") },
             text = {
                 Text(
-                    "After locking, PureGuard cannot be switched off, changed or uninstalled without " +
-                        "the password — and you don't know the password. This is permanent by design.",
+                    "After locking, settings can only be changed with the password, which is kept in " +
+                        "PASSWORD.txt in the project. You can still pause the optional extras for payments " +
+                        "without it.",
                 )
             },
             confirmButton = {
@@ -292,8 +330,8 @@ private fun Header(status: ProtectionStatus) {
 
 @Composable
 private fun Hero(status: ProtectionStatus) {
-    val protectedFully = status.coreReady
-    val accent by animateColorAsState(if (protectedFully) TealBright else Warn, label = "accent")
+    val ok = status.filterActive
+    val accent by animateColorAsState(if (ok) TealBright else Warn, label = "accent")
     Box(
         Modifier
             .fillMaxWidth()
@@ -307,24 +345,31 @@ private fun Hero(status: ProtectionStatus) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    if (protectedFully) Icons.Rounded.Shield else Icons.Rounded.Warning,
+                    if (ok) Icons.Rounded.Shield else Icons.Rounded.Warning,
                     null, tint = accent, modifier = Modifier.size(40.dp),
                 )
             }
             Spacer(Modifier.width(18.dp))
             Column {
                 Text(
-                    if (protectedFully) "You're protected" else "Finish setup",
+                    if (ok) "You're protected" else "Filter is off",
                     style = MaterialTheme.typography.headlineSmall, color = Color.White,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "${status.layersActive} of ${status.layersTotal} layers active",
+                    when {
+                        status.privateDns && status.dnsHost == PrivateDns.HOST_STANDARD -> "Safe DNS · Standard"
+                        status.privateDns -> "Safe DNS · Strict"
+                        status.vpnRunning -> "Backup VPN filter only"
+                        else -> "Turn on the Safe DNS filter below"
+                    },
                     color = accent, style = MaterialTheme.typography.titleMedium,
                 )
-                if (status.deviceOwner) {
-                    Text("Maximum strength mode", color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodySmall)
+                if (status.blockedTotal > 0) {
+                    Text(
+                        "${status.blockedToday} blocked today · ${status.blockedTotal} in total",
+                        color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }
@@ -332,25 +377,67 @@ private fun Hero(status: ProtectionStatus) {
 }
 
 @Composable
-private fun Stats(status: ProtectionStatus) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Stat("Blocked today", fmt(status.blockedToday), Modifier.weight(1f))
-        Stat("All time", fmt(status.blockedTotal), Modifier.weight(1f))
-        Stat(
-            "List updated",
-            if (status.listUpdatedAt == 0L) "Built-in"
-            else DateUtils.getRelativeTimeSpanString(status.listUpdatedAt).toString(),
-            Modifier.weight(1f),
-        )
+private fun PauseCard(status: ProtectionStatus, actions: HomeActions) {
+    val paused = status.pausedForMs > 0
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.Payments, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (paused) "Paused · ${status.pausedForMs / 1000 / 60}:${"%02d".format(status.pausedForMs / 1000 % 60)}"
+                    else "Payment not going through?",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    if (paused) "Screen Guard and the VPN filter are off. The Safe DNS filter stays on."
+                    else "Switch the optional extras off for 5 minutes. ${status.pausesLeft} left today.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            if (paused) {
+                OutlinedButton(onClick = actions::resume) { Text("Resume") }
+            } else {
+                Button(onClick = actions::pause, enabled = status.pausesLeft > 0) { Text("Pause") }
+            }
+        }
     }
 }
 
 @Composable
-private fun Stat(label: String, value: String, modifier: Modifier) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Column(Modifier.padding(14.dp)) {
-            Text(value, style = MaterialTheme.typography.headlineSmall, maxLines = 1)
-            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun ComputerSetup(actions: HomeActions) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Terminal, null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text("One-time computer step (recommended)", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Lets PureGuard switch the Safe DNS filter on by itself, keep it on while locked, and " +
+                    "bring Screen Guard back after a payment pause. With USB debugging on, run this once, " +
+                    "then turn USB debugging off again:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                    .padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    CMD_SECURE, fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { actions.copy(CMD_SECURE) }) { Icon(Icons.Rounded.ContentCopy, "Copy") }
+            }
         }
     }
 }
@@ -404,9 +491,10 @@ private fun Layer(
                 if (active) {
                     Icon(Icons.Rounded.CheckCircle, "Active", tint = Good, modifier = Modifier.size(28.dp))
                 } else {
-                    FilledTonalButton(onClick = onAction, enabled = enabled, contentPadding = PaddingValues(horizontal = 12.dp)) {
-                        Text(actionLabel)
-                    }
+                    FilledTonalButton(
+                        onClick = onAction, enabled = enabled,
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                    ) { Text(actionLabel) }
                 }
             }
             if (hint != null) {
@@ -426,90 +514,21 @@ private fun Layer(
 }
 
 @Composable
-private fun Advanced(status: ProtectionStatus, actions: HomeActions) {
-    var open by remember { mutableStateOf(false) }
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Column(Modifier.padding(16.dp)) {
-            Row(
-                Modifier.fillMaxWidth().clickable { open = !open },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Terminal, null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Maximum strength (optional)", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Uses a computer once to give PureGuard powers no ordinary app has.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null)
-            }
-            AnimatedVisibility(open) {
-                Column(Modifier.padding(top = 12.dp)) {
-                    Text(
-                        "Enable USB debugging (Settings → About → tap Build number 7× → Developer options), " +
-                            "connect to a computer with Android platform-tools, and run:",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    CommandRow(
-                        "Self-healing", "Auto re-enables Screen Guard if switched off and blocks custom Private DNS.",
-                        CMD_SECURE, status.secureSettings, actions,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    CommandRow(
-                        "Device owner", "Strongest. Blocks safe mode, VPN changes, extra users, adb and uninstall " +
-                            "at the system level. Requires removing all accounts (Google etc.) first; add them back after.",
-                        CMD_OWNER, status.deviceOwner, actions,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CommandRow(title: String, desc: String, cmd: String, done: Boolean, actions: HomeActions) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
-            .padding(12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            if (done) Icon(Icons.Rounded.CheckCircle, "Active", tint = Good)
-        }
-        Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                cmd, fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { actions.copy(cmd) }) { Icon(Icons.Rounded.ContentCopy, "Copy") }
-        }
-    }
-}
-
-@Composable
 private fun LockCard(ready: Boolean, onLock: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(18.dp)) {
-            Text("Final step: lock it", style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text("Lock it (optional)", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(6.dp))
             Text(
-                if (ready) "Everything essential is on. Lock PureGuard so it can't be disabled in a weak moment."
-                else "Turn on the content filter, Screen Guard and uninstall protection first.",
+                if (ready) "Locking means settings can only be changed with the password. Try PureGuard " +
+                    "unlocked for a few days first, and check that your payment apps work."
+                else "Turn on the Safe DNS filter first.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onLock, enabled = ready, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-                Icon(Icons.Rounded.Lock, null)
+            OutlinedButton(onClick = onLock, enabled = ready, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Lock, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Lock PureGuard")
             }
@@ -528,7 +547,7 @@ private fun LockedCard(onUnlock: () -> Unit) {
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "Settings can only be changed with the password.",
+                "Settings can only be changed with the password (see PASSWORD.txt in the project).",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -542,10 +561,7 @@ private fun LockedCard(onUnlock: () -> Unit) {
 private fun UnlockedCard(remainingMs: Long, onRelock: () -> Unit, onRemove: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(18.dp)) {
-            Text(
-                "Unlocked for ${remainingMs / 60_000 + 1} min",
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Text("Unlocked for ${remainingMs / 60_000 + 1} min", style = MaterialTheme.typography.titleMedium)
             Text(
                 "You can change settings below. It locks itself again automatically.",
                 style = MaterialTheme.typography.bodySmall,
@@ -561,27 +577,33 @@ private fun UnlockedCard(remainingMs: Long, onRelock: () -> Unit, onRemove: () -
 }
 
 @Composable
-private fun SettingsCard(tick: Int, onChange: () -> Unit) {
+private fun SettingsCard(tick: Int, actions: HomeActions, onChange: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(vertical = 6.dp)) {
-            Toggle("Enforce SafeSearch", "Google, Bing, DuckDuckGo, YouTube restricted mode", Prefs.safeSearch) {
-                Prefs.safeSearch = it; onChange()
-            }
+            Toggle(
+                "Strict Safe DNS",
+                "On: also blocks proxies, VPN sites and mixed sites like Reddit. Off: adult sites only.",
+                Prefs.dnsStrict,
+            ) { actions.setDnsStrict(it); onChange() }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            Toggle("Scan screen text", "Close pages and apps full of explicit words", Prefs.screenScan) {
-                Prefs.screenScan = it; onChange()
-            }
-            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            Toggle("Block adult searches", "Stops explicit searches as you type them", Prefs.typingGuard) {
+            Toggle("Block adult searches", "Screen Guard: stops explicit searches typed in a browser", Prefs.typingGuard) {
                 Prefs.typingGuard = it; onChange()
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            Toggle("Block bypass services", "Proxies, VPN sites, Tor, encrypted-DNS resolvers", Prefs.blockBypassTools) {
-                Prefs.blockBypassTools = it; onChange()
+            Toggle("Scan screen text", "Screen Guard: close screens full of explicit words. Can misfire.", Prefs.screenScan) {
+                Prefs.screenScan = it; onChange()
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            Toggle("Block other VPN apps", "Any app that could replace the filter", Prefs.blockOtherVpnApps) {
+            Toggle("Block other VPN apps", "Screen Guard: close any app that contains a VPN", Prefs.blockOtherVpnApps) {
                 Prefs.blockOtherVpnApps = it; onChange()
+            }
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+            Toggle("SafeSearch in VPN filter", "Backup VPN filter: force SafeSearch", Prefs.safeSearch) {
+                Prefs.safeSearch = it; onChange()
+            }
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+            Toggle("Block bypass services in VPN filter", "Backup VPN filter: proxies, Tor, other DNS", Prefs.blockBypassTools) {
+                Prefs.blockBypassTools = it; onChange()
             }
         }
     }
@@ -600,6 +622,7 @@ private fun Toggle(title: String, subtitle: String, value: Boolean, onChange: (B
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Spacer(Modifier.width(8.dp))
         Switch(checked = value, onCheckedChange = onChange)
     }
 }
@@ -607,7 +630,7 @@ private fun Toggle(title: String, subtitle: String, value: Boolean, onChange: (B
 @Composable
 private fun DomainListCard(title: String, placeholder: String, tick: Int, onChange: () -> Unit, allowList: Boolean) {
     var input by remember { mutableStateOf("") }
-    val items = if (allowList) Prefs.customAllowed else Prefs.customBlocked
+    val domains = if (allowList) Prefs.customAllowed else Prefs.customBlocked
     fun save(set: Set<String>) {
         if (allowList) Prefs.customAllowed = set else Prefs.customBlocked = set
         onChange()
@@ -615,12 +638,17 @@ private fun DomainListCard(title: String, placeholder: String, tick: Int, onChan
     fun add() {
         val d = input.trim().lowercase().removePrefix("https://").removePrefix("http://")
             .removePrefix("www.").substringBefore('/')
-        if (d.contains('.')) save(items + d)
+        if (d.contains('.')) save(domains + d)
         input = ""
     }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Used by Screen Guard and the backup VPN filter.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
@@ -632,10 +660,10 @@ private fun DomainListCard(title: String, placeholder: String, tick: Int, onChan
                 )
                 IconButton(onClick = { add() }) { Icon(Icons.Rounded.Add, "Add") }
             }
-            items.sorted().forEach { d ->
+            domains.sorted().forEach { d ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(d, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                    IconButton(onClick = { save(items - d) }) { Icon(Icons.Rounded.Close, "Remove") }
+                    IconButton(onClick = { save(domains - d) }) { Icon(Icons.Rounded.Close, "Remove") }
                 }
             }
         }
@@ -661,6 +689,12 @@ private fun PasswordDialog(onDismiss: () -> Unit) {
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     enabled = !busy,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "This is version ${BuildConfig.VERSION_NAME}. The password is in PASSWORD.txt.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 message?.let {
                     Spacer(Modifier.height(8.dp))
@@ -696,8 +730,6 @@ private fun PasswordDialog(onDismiss: () -> Unit) {
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
-
-private fun fmt(n: Number): String = NumberFormat.getIntegerInstance().format(n)
 
 private fun dur(ms: Long): String {
     val s = ms / 1000

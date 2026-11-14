@@ -1,73 +1,90 @@
 # PureGuard
 
-A strict, on-device adult content blocker for Android, written in Kotlin with Jetpack Compose.
-It is locked with a random password. Only a one-way hash is in the code; the password itself
-is saved in `PASSWORD.txt`.
+An on-device adult content blocker for Android, written in Kotlin with Jetpack Compose.
+Version 2 is built so that it does **not** interfere with other apps, banking and UPI apps included.
+
+## How it works
+
+**Core protection (works alongside every app)**
+
+| Layer | What it does |
+|---|---|
+| **Safe DNS filter** | Points Android's own *Private DNS* setting at CleanBrowsing's family filter. Every app and browser on the phone gets adult sites blocked and SafeSearch forced on Google, Bing and YouTube. It is a system setting, not a VPN and not an accessibility service, so payment apps have nothing to object to. |
+| **Uninstall protection** | Device administrator, so Android refuses to uninstall PureGuard while it is on. |
+
+**Optional extras (off by default)**
+
+Some banking and payment apps refuse to run while *any* accessibility service or VPN is active.
+These extras are therefore optional, never touch payment apps, and can be paused.
+
+| Layer | What it does |
+|---|---|
+| **Screen Guard** (accessibility) | Checks browser address bars and searches typed in browsers, blocks Tor and proxy apps, and guards PureGuard's settings while locked. Banking, UPI and wallet apps are never inspected. |
+| **Backup VPN filter** | A second, local DNS filter with ~110,000 adult domains. Payment apps are routed around it. |
+| **Pause for payments** | One tap, no password: switches Screen Guard and the VPN filter off completely for 5 minutes (up to 8 times a day). The Safe DNS filter stays on. |
 
 ## Install
 
 1. On your Android phone, open this repository's **Releases** page and download the latest
-   `PureGuard-x.y.z.apk`.
-2. Open it and allow "Install unknown apps" for your browser when asked.
-3. Open PureGuard and follow the setup checklist (below). Then tap **Lock PureGuard**.
+   `PureGuard-2.0.x.apk`.
+2. Open it and allow "Install unknown apps" when asked. If Play Protect warns, choose
+   **More details → Install anyway**.
+3. Open PureGuard and tap **Set up** on *Safe DNS filter*, then follow the three steps shown.
+4. Tap **Activate** on *Uninstall protection*.
+5. Use the phone normally for a few days, payments included. Only then consider **Lock PureGuard**.
 
-Updates install over the old version. You never need to uninstall.
+### Recommended one-time computer step
 
-## How it blocks: every layer
+With USB debugging on, run this once, then turn USB debugging off again (some banking apps
+dislike USB debugging being on):
 
-| Layer | What it does |
-|---|---|
-| **DNS filter (local VPN)** | Every domain lookup on the phone is checked against ~110,000 adult domains (StevenBlack porn list plus hagezi NSFW, refreshed every 3 days) and a keyword heuristic. Blocked sites get NXDOMAIN. Nothing leaves the phone except normal DNS. |
-| **Family-safe upstream DNS** | Allowed lookups are resolved by Cloudflare for Families (1.1.1.3) and CleanBrowsing Adult, which block adult content again on their side. |
-| **Forced SafeSearch** | Google, Bing, DuckDuckGo, Yandex, Pixabay and YouTube (Restricted Mode) are rewritten at DNS level to their enforced safe endpoints. Explicit image results disappear. |
-| **Anti-bypass DNS** | Public resolvers (8.8.8.8, 1.1.1.1, Quad9, AdGuard, NextDNS…) are routed into the filter: plain DNS to them is filtered, and DNS-over-HTTPS/TLS to them is reset. DoH hostnames are blocked, and Firefox's DoH canary tells Firefox to disable DoH. |
-| **Bypass services blocked** | Web proxies, VPN provider sites, Tor, iCloud Private Relay and the Google Translate proxy. |
-| **Screen Guard (accessibility)** | Reads the address bar of 25+ browsers, catches adult searches as you type them in any app, and closes screens full of explicit words. |
-| **Bypass apps blocked** | Tor Browser, Orbot, Psiphon, Opera (built-in VPN), WARP, and **every other installed app that contains a VPN**. |
-| **Self-protection** | While locked, it kicks you out of any screen that could disable it: App info (force stop, uninstall, clear data), its accessibility toggle, device-admin deactivation, VPN settings, Private DNS, adding users or guests, and the "reboot to safe mode" prompt. |
-| **Uninstall protection** | Device administrator, so Android refuses to uninstall it. |
-| **Self-healing** | A watchdog every 15 minutes, on boot, and every 20 seconds from Screen Guard restarts the filter and raises an alert if anything is off. |
-| **Password** | 20 random characters, stored only as PBKDF2-SHA256 (210k iterations). Wrong guesses lock the prompt with an exponential back-off of up to 24 hours. |
+```
+adb shell pm grant com.pureguard.app android.permission.WRITE_SECURE_SETTINGS
+```
 
-### Optional: maximum strength (needs a computer once)
+It lets PureGuard switch the Safe DNS filter on by itself, put it back if it is changed while
+locked, and bring Screen Guard back automatically after a payment pause.
 
-From the app's **Maximum strength** section:
+## Password
 
-* `adb shell pm grant com.pureguard.app android.permission.WRITE_SECURE_SETTINGS`
-  lets the app re-enable Screen Guard by itself and override a custom Private DNS.
-* `adb shell dpm set-device-owner com.pureguard.app/.admin.GuardAdminReceiver`
-  makes the app **device owner**. Android itself then blocks safe mode, VPN changes, extra users,
-  USB debugging and uninstalling, and forces the filter to be always-on. You must remove all
-  accounts (Google, Samsung…) from the phone before running it, then add them back.
+The unlock password is in [`PASSWORD.txt`](PASSWORD.txt). The app shows its version number at the
+bottom of the home screen and in the password box. A correct password unlocks settings for
+10 minutes; **Remove protection** then switches everything off and lets you uninstall.
 
-## Setup checklist
+## If something ever goes wrong
 
-1. **Content filter**: tap *Turn on* and accept the VPN prompt.
-2. **Screen Guard**: *Open settings* → PureGuard → on. If the switch is greyed out (Android 13+
-   for sideloaded apps), tap *App info* → ⋮ → **Allow restricted settings**, then try again.
-3. **Uninstall protection**: *Activate*.
-4. **Always-on filter**: *VPN settings* → ⚙ next to PureGuard → **Always-on VPN** on.
-   Leave "Block connections without VPN" **off**. The filter only captures DNS, so that option
-   would cut your internet.
-5. **Never put to sleep**: *Allow*.
-6. Tap **Lock PureGuard**.
+These rescue routes are never blocked by PureGuard:
+
+* **Safe mode**: hold the power button, long-press *Power off*, choose safe mode. PureGuard is
+  inactive there, so you can deactivate it under *Device admin apps* and uninstall it.
+* **USB debugging**: `adb install -r` a newer build over it, or `adb uninstall com.pureguard.app`
+  after deactivating the device admin.
+* **Private DNS**: if a network blocks the filter and you have no internet, set
+  *Settings → Private DNS* to *Automatic* (needs the password when Screen Guard is on and locked).
+
+## Checks before every release
+
+Each push runs on GitHub Actions and a release is only published if all of this passes:
+
+1. Logic tests: password file matches the app, payment-app detection, classifier, DNS and packet code.
+2. The app is installed on an Android emulator and tested there: the home and block screens open,
+   the bundled blocklist loads, the Safe DNS filter is really switched on and off, and the payment
+   pause works.
+3. The exact release APK is installed and opened on the emulator and must stay open.
+
+An emulator cannot run real banking apps, so compatibility with a specific payment app can only be
+confirmed on your own phone. That is why locking is optional and comes last.
 
 ## Honest limits
 
-No app can be 100% unbreakable on a phone you own, so here is how it could still be removed:
-
-* A **factory reset** always wipes it. This is left available on purpose so the phone can never
-  become unusable.
-* Someone with the source code could build a different version and install it as an update.
-* The filter can't see inside images. Adult images on otherwise normal sites can still appear;
-  SafeSearch and the screen text scan reduce this a lot.
+* The filter works on website names. Adult images on otherwise normal sites can still appear;
+  forced SafeSearch reduces this a lot.
+* The Strict filter also blocks mixed-content sites such as Reddit. Switch to Standard in Settings
+  if that is too much.
+* Anyone with the password, safe mode or a computer can remove it. That is deliberate.
 
 ## Build it yourself
 
-GitHub Actions builds every push (`.github/workflows/build.yml`). Locally:
-
 ```
-./gradlew assembleRelease
+./gradlew testReleaseUnitTest assembleRelease
 ```
-
-The output is `app/build/outputs/apk/release/app-release.apk`.

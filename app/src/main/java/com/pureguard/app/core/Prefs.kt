@@ -43,8 +43,8 @@ object Prefs {
 
     // ---- Feature switches (all on by default; only changeable when unlocked) ----
     var screenScan: Boolean
-        get() = sp.getBoolean("screen_scan", true)
-        set(v) = sp.edit().putBoolean("screen_scan", v).apply()
+        get() = sp.getBoolean("screen_scan_v2", false)
+        set(v) = sp.edit().putBoolean("screen_scan_v2", v).apply()
 
     var typingGuard: Boolean
         get() = sp.getBoolean("typing_guard", true)
@@ -59,12 +59,43 @@ object Prefs {
         set(v) = sp.edit().putBoolean("block_bypass", v).apply()
 
     var blockOtherVpnApps: Boolean
-        get() = sp.getBoolean("block_vpn_apps", true)
-        set(v) = sp.edit().putBoolean("block_vpn_apps", v).apply()
+        get() = sp.getBoolean("block_vpn_apps_v2", false)
+        set(v) = sp.edit().putBoolean("block_vpn_apps_v2", v).apply()
 
     var vpnWanted: Boolean
         get() = sp.getBoolean("vpn_wanted", false)
         set(v) = sp.edit().putBoolean("vpn_wanted", v).apply()
+
+    /** true = CleanBrowsing Family (strictest), false = Adult filter only. */
+    var dnsStrict: Boolean
+        get() = sp.getBoolean("dns_strict", true)
+        set(v) = sp.edit().putBoolean("dns_strict", v).apply()
+
+    /** Screen Guard was switched on by the user at some point. */
+    var screenGuardWanted: Boolean
+        get() = sp.getBoolean("screen_guard_wanted", false)
+        set(v) = sp.edit().putBoolean("screen_guard_wanted", v).apply()
+
+    // ---- Payment pause ----
+    var pauseUntil: Long
+        get() = sp.getLong("pause_until", 0L)
+        set(v) = sp.edit().putLong("pause_until", v).apply()
+
+    val paused: Boolean get() = System.currentTimeMillis() < pauseUntil
+
+    /** Screen Guard must be switched back on once the pause is over. */
+    var resumeGuardPending: Boolean
+        get() = sp.getBoolean("resume_guard_pending", false)
+        set(v) = sp.edit().putBoolean("resume_guard_pending", v).apply()
+
+    val pausesToday: Int
+        get() = if (sp.getString("pause_day", "") == LocalDate.now().toString())
+            sp.getInt("pause_count", 0) else 0
+
+    fun recordPause() {
+        val n = pausesToday + 1
+        sp.edit().putString("pause_day", LocalDate.now().toString()).putInt("pause_count", n).apply()
+    }
 
     // ---- Custom lists ----
     var customBlocked: Set<String>

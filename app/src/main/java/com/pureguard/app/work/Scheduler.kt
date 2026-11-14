@@ -14,6 +14,7 @@ object Scheduler {
     private const val WATCHDOG = "watchdog"
     private const val UPDATE = "blocklist-update"
     private const val UPDATE_NOW = "blocklist-update-now"
+    private const val RESUME = "resume-after-pause"
 
     fun scheduleAll(context: Context) {
         val wm = WorkManager.getInstance(context)
@@ -26,6 +27,16 @@ object Scheduler {
             PeriodicWorkRequestBuilder<BlocklistUpdateWorker>(3, TimeUnit.DAYS)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
                 .setInitialDelay(6, TimeUnit.HOURS)
+                .build(),
+        )
+    }
+
+    /** Runs the watchdog right after a payment pause ends, to switch layers back on. */
+    fun resumeAfterPause(context: Context, delayMs: Long) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            RESUME, ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<WatchdogWorker>()
+                .setInitialDelay(delayMs + 3_000, TimeUnit.MILLISECONDS)
                 .build(),
         )
     }

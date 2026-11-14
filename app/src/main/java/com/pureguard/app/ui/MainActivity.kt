@@ -19,10 +19,12 @@ import com.pureguard.app.admin.DeviceOwner
 import com.pureguard.app.admin.GuardAdminReceiver
 import com.pureguard.app.core.PasswordVault
 import com.pureguard.app.core.Prefs
+import com.pureguard.app.core.PrivateDns
+import com.pureguard.app.guard.GuardAccessibilityService
 import com.pureguard.app.core.Protection
 import com.pureguard.app.ui.theme.PureGuardTheme
 import com.pureguard.app.vpn.ShieldVpnService
-import com.pureguard.app.work.Scheduler
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity(), HomeActions {
 
@@ -79,7 +81,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         startActivity(
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")),
         )
-        toast("Tap ⋮ (top right) → Allow restricted settings")
+        toast("If you see ⋮ at the top right: tap it → Allow restricted settings")
     }
 
     override fun enableAdmin() {
@@ -93,10 +95,34 @@ class MainActivity : ComponentActivity(), HomeActions {
         )
     }
 
-    override fun openVpnSettings() {
+    override fun applyDns() {
+        thread {
+            val ok = PrivateDns.apply(this)
+            runOnUiThread {
+                toast(if (ok) "Safe DNS filter is on" else "Could not change the setting. Use the manual steps.")
+            }
+        }
+    }
+
+    override fun openNetworkSettings() {
+        runCatching { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
+            .onFailure { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+    }
+
+    override fun setDnsStrict(strict: Boolean) {
         if (!Prefs.canEdit) return
-        startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
-        toast("Tap ⚙ next to PureGuard → turn on Always-on VPN")
+        Prefs.dnsStrict = strict
+        if (Protection.hasSecureSettings(this) && PrivateDns.isActive(this)) applyDns()
+    }
+
+    override fun pause() {
+        if (Protection.startPause(this)) toast("Paused for 5 minutes. Make your payment now.")
+        else toast("No pauses left today")
+    }
+
+    override fun resume() {
+        Protection.endPause(this)
+        if (Prefs.vpnWanted) enableVpn()
     }
 
     override fun requestBattery() {
@@ -114,7 +140,6 @@ class MainActivity : ComponentActivity(), HomeActions {
     override fun lock() {
         Prefs.locked = true
         Prefs.unlockedUntil = 0
-        Prefs.vpnWanted = true
         DeviceOwner.applyPolicies(this)
         toast("PureGuard is now locked")
     }
@@ -129,16 +154,15 @@ class MainActivity : ComponentActivity(), HomeActions {
         if (!Prefs.canEdit) return
         DeviceOwner.releaseAll(this)
         ShieldVpnService.stop(this)
+        PrivateDns.clear(this)
         Prefs.locked = false
         Prefs.vpnWanted = false
+        Prefs.screenGuardWanted = false
+        Prefs.resumeGuardPending = false
+        GuardAccessibilityService.pauseSelf()
         startActivity(
             Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")),
         )
-    }
-
-    override fun updateLists() {
-        Scheduler.updateNow(this)
-        toast("Updating blocklists in the background…")
     }
 
     override fun copy(text: String) {

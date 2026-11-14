@@ -10,6 +10,7 @@ import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.pureguard.app.core.Notifier
+import com.pureguard.app.core.PaymentApps
 import com.pureguard.app.core.Prefs
 import com.pureguard.app.filter.BuiltInLists
 import com.pureguard.app.filter.DomainFilter
@@ -35,6 +36,7 @@ class ShieldVpnService : VpnService() {
         private const val TAG = "ShieldVpn"
         const val ACTION_START = "com.pureguard.app.START"
         const val ACTION_STOP = "com.pureguard.app.STOP"
+        const val ACTION_PAUSE = "com.pureguard.app.PAUSE"
 
         private const val V4_ADDR = "10.111.222.1"
         private const val V4_DNS = "10.111.222.53"
@@ -69,6 +71,14 @@ class ShieldVpnService : VpnService() {
             }
         }
 
+        /** Temporary stop for the payment pause; [Protection.heal] starts it again. */
+        fun pause(context: Context) {
+            if (!isRunning) return
+            runCatching {
+                context.startService(Intent(context, ShieldVpnService::class.java).setAction(ACTION_PAUSE))
+            }
+        }
+
         /** Only honoured when the password session is active (or not yet locked). */
         fun stop(context: Context) {
             if (!Prefs.canEdit) return
@@ -85,7 +95,8 @@ class ShieldVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Prefs.init(this)
         goForeground()
-        if (intent?.action == ACTION_STOP && Prefs.canEdit) {
+        val stop = intent?.action == ACTION_PAUSE || (intent?.action == ACTION_STOP && Prefs.canEdit)
+        if (stop || Prefs.paused) {
             shutdown()
             stopSelf()
             return START_NOT_STICKY
@@ -124,6 +135,8 @@ class ShieldVpnService : VpnService() {
         }
         // Our own traffic (blocklist updates, upstream DNS) never loops through the tunnel.
         runCatching { b.addDisallowedApplication(packageName) }
+        // Banking / UPI / wallet apps bypass the tunnel completely.
+        for (pkg in PaymentApps.installed(this)) runCatching { b.addDisallowedApplication(pkg) }
         if (Build.VERSION.SDK_INT >= 29) b.setMetered(false)
 
         val pfd = try {
